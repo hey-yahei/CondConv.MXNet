@@ -36,10 +36,10 @@ sys.path.append("../..")
 from cond import CondConv2D
 
 # Helpers
-def _conv3x3(channels, stride, in_channels, num_experts):
+def _conv3x3(channels, stride, in_channels, router, num_experts, compute_mode):
     return CondConv2D(channels, kernel_size=3, strides=stride, padding=1,
                       use_bias=False, in_channels=in_channels,
-                      num_experts=num_experts)
+                      router=router, num_experts=num_experts, compute_mode=compute_mode)
 
 
 # Blocks
@@ -65,13 +65,13 @@ class CIFARBasicBlockV1(HybridBlock):
         for :class:`mxnet.gluon.contrib.nn.SyncBatchNorm`.
     """
     def __init__(self, channels, stride, downsample=False, in_channels=0,
-                 norm_layer=BatchNorm, norm_kwargs=None, num_experts=1, **kwargs):
+                 norm_layer=BatchNorm, norm_kwargs=None, router=None, num_experts=1, compute_mode='auto', **kwargs):
         super(CIFARBasicBlockV1, self).__init__(**kwargs)
         self.body = nn.HybridSequential(prefix='')
-        self.body.add(_conv3x3(channels, stride, in_channels, num_experts))
+        self.body.add(_conv3x3(channels, stride, in_channels, router, num_experts, compute_mode))
         self.body.add(norm_layer(**({} if norm_kwargs is None else norm_kwargs)))
         self.body.add(nn.Activation('relu'))
-        self.body.add(_conv3x3(channels, 1, channels, num_experts))
+        self.body.add(_conv3x3(channels, 1, channels, router, num_experts, compute_mode))
         self.body.add(norm_layer(**({} if norm_kwargs is None else norm_kwargs)))
         if downsample:
             self.downsample = nn.HybridSequential(prefix='')
@@ -117,12 +117,12 @@ class CIFARBasicBlockV2(HybridBlock):
         for :class:`mxnet.gluon.contrib.nn.SyncBatchNorm`.
     """
     def __init__(self, channels, stride, downsample=False, in_channels=0,
-                 norm_layer=BatchNorm, norm_kwargs=None, num_experts=1, **kwargs):
+                 norm_layer=BatchNorm, norm_kwargs=None, router=None, num_experts=1, compute_mode='auto', **kwargs):
         super(CIFARBasicBlockV2, self).__init__(**kwargs)
         self.bn1 = norm_layer(**({} if norm_kwargs is None else norm_kwargs))
-        self.conv1 = _conv3x3(channels, stride, in_channels, num_experts)
+        self.conv1 = _conv3x3(channels, stride, in_channels, router, num_experts, compute_mode)
         self.bn2 = norm_layer(**({} if norm_kwargs is None else norm_kwargs))
-        self.conv2 = _conv3x3(channels, 1, channels, num_experts)
+        self.conv2 = _conv3x3(channels, 1, channels, router, num_experts, compute_mode)
         if downsample:
             self.downsample = nn.Conv2D(channels, 1, stride, use_bias=False,
                                         in_channels=in_channels)
@@ -168,7 +168,7 @@ class CIFARResNetV1(HybridBlock):
         for :class:`mxnet.gluon.contrib.nn.SyncBatchNorm`.
     """
     def __init__(self, block, layers, channels, classes=10,
-                 norm_layer=BatchNorm, norm_kwargs=None, num_experts=1, **kwargs):
+                 norm_layer=BatchNorm, norm_kwargs=None, router=None, num_experts=1, compute_mode='auto', **kwargs):
         super(CIFARResNetV1, self).__init__(**kwargs)
         assert len(layers) == len(channels) - 1
         with self.name_scope():
@@ -181,20 +181,22 @@ class CIFARResNetV1(HybridBlock):
                 self.features.add(self._make_layer(block, num_layer, channels[i+1],
                                                    stride, i+1, in_channels=channels[i],
                                                    norm_layer=norm_layer, norm_kwargs=norm_kwargs,
-                                                   num_experts=num_experts))
+                                                   router=router, num_experts=num_experts, compute_mode=compute_mode))
             self.features.add(nn.GlobalAvgPool2D())
 
             self.output = nn.Dense(classes, in_units=channels[-1])
 
     def _make_layer(self, block, layers, channels, stride, stage_index, in_channels=0,
-                    norm_layer=BatchNorm, norm_kwargs=None, num_experts=1):
+                    norm_layer=BatchNorm, norm_kwargs=None, router=None, num_experts=1, compute_mode='auto'):
         layer = nn.HybridSequential(prefix='stage%d_'%stage_index)
         with layer.name_scope():
             layer.add(block(channels, stride, channels != in_channels, in_channels=in_channels,
-                            prefix='', norm_layer=norm_layer, norm_kwargs=norm_kwargs, num_experts=num_experts))
+                            prefix='', norm_layer=norm_layer, norm_kwargs=norm_kwargs,
+                            router=router, num_experts=num_experts, compute_mode=compute_mode))
             for _ in range(layers-1):
                 layer.add(block(channels, 1, False, in_channels=channels, prefix='',
-                                norm_layer=norm_layer, norm_kwargs=norm_kwargs, num_experts=num_experts))
+                                norm_layer=norm_layer, norm_kwargs=norm_kwargs,
+                                router=router, num_experts=num_experts, compute_mode=compute_mode))
         return layer
 
     def hybrid_forward(self, F, x):
@@ -226,7 +228,7 @@ class CIFARResNetV2(HybridBlock):
         for :class:`mxnet.gluon.contrib.nn.SyncBatchNorm`.
     """
     def __init__(self, block, layers, channels, classes=10,
-                 norm_layer=BatchNorm, norm_kwargs=None, num_experts=1, **kwargs):
+                 norm_layer=BatchNorm, norm_kwargs=None, router=None, num_experts=1, compute_mode='auto', **kwargs):
         super(CIFARResNetV2, self).__init__(**kwargs)
         assert len(layers) == len(channels) - 1
         with self.name_scope():
@@ -241,7 +243,8 @@ class CIFARResNetV2(HybridBlock):
                 stride = 1 if i == 0 else 2
                 self.features.add(self._make_layer(block, num_layer, channels[i+1],
                                                    stride, i+1, in_channels=in_channels,
-                                                   norm_layer=norm_layer, norm_kwargs=norm_kwargs, num_experts=num_experts))
+                                                   norm_layer=norm_layer, norm_kwargs=norm_kwargs,
+                                                   router=router, num_experts=num_experts, compute_mode=compute_mode))
                 in_channels = channels[i+1]
             self.features.add(norm_layer(**({} if norm_kwargs is None else norm_kwargs)))
             self.features.add(nn.Activation('relu'))
@@ -251,14 +254,16 @@ class CIFARResNetV2(HybridBlock):
             self.output = nn.Dense(classes, in_units=in_channels)
 
     def _make_layer(self, block, layers, channels, stride, stage_index, in_channels=0,
-                    norm_layer=BatchNorm, norm_kwargs=None, num_experts=1):
+                    norm_layer=BatchNorm, norm_kwargs=None, router=None, num_experts=1, compute_mode='auto'):
         layer = nn.HybridSequential(prefix='stage%d_'%stage_index)
         with layer.name_scope():
             layer.add(block(channels, stride, channels != in_channels, in_channels=in_channels,
-                            prefix='', norm_layer=norm_layer, norm_kwargs=norm_kwargs, num_experts=num_experts))
+                            prefix='', norm_layer=norm_layer, norm_kwargs=norm_kwargs,
+                            router=router, num_experts=num_experts, compute_mode=compute_mode))
             for _ in range(layers-1):
                 layer.add(block(channels, 1, False, in_channels=channels, prefix='',
-                                norm_layer=norm_layer, norm_kwargs=norm_kwargs, num_experts=num_experts))
+                                norm_layer=norm_layer, norm_kwargs=norm_kwargs,
+                                router=router, num_experts=num_experts, compute_mode=compute_mode))
         return layer
 
     def hybrid_forward(self, F, x):

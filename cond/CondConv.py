@@ -51,7 +51,7 @@ class CondConv2D(HybridBlock):
 
         with self.name_scope():
             if compute_mode == 'auto':
-                self._combine_kernels = True if num_experts > 4 else False
+                self._combine_kernels = (num_experts > 4)
             else:
                 self._combine_kernels = (compute_mode == 'combine_kernels')
             self._channels = channels
@@ -86,18 +86,27 @@ class CondConv2D(HybridBlock):
             else:
                 self.act = None
 
-            self.router = router or DefaultRouter(num_experts)
+            self.router = router(num_experts) or DefaultRouter(num_experts)
 
     def hybrid_forward(self, F, x, weight, bias=None):
         routing_weights = self.router(x)
         if self._combine_kernels:
-            x = x.split(axis=0, num_outputs=x.shape[0])
-            new_weight = (weight.expand_dims(0) * routing_weights.reshape(0, 0, 1, 1, 1, 1)).sum(axis=1)
+            # x_split = x.split(axis=0, num_outputs=x.shape[0])
+            # new_weight = (weight.expand_dims(0) * routing_weights.reshape(0, 0, 1, 1, 1, 1)).sum(axis=1)
+            # if bias is not None:
+            #     new_bias = (bias.expand_dims(0) * routing_weights.reshape(0, 0, 1)).sum(axis=1)
+            #     act = F.concat(*[F.Convolution(x, w, b, name='fwd', **self._kwargs)
+            #                      for x, w, b in zip(x_split, new_weight, new_bias)], dim=0)
+            # else:
+            #     act = F.concat(*[F.Convolution(x, w, name='fwd', **self._kwargs)
+            #                      for x, w in zip(x_split, new_weight)], dim=0)
+            assert x.shape[0] == 1
+            new_weight = (weight * routing_weights.reshape(-1, 1, 1, 1, 1)).sum(axis=0)
             if bias is not None:
-                new_bias = (bias.expand_dims(0) * routing_weights.reshape(0, 0, 1)).sum(axis=1)
-                act = F.concat(*[F.Convolution(x, w, b, name='fwd', **self._kwargs) for w, b in zip(new_weight, new_bias)])
+                new_bias = (bias * routing_weights.reshape(-1, 1)).sum(axis=0)
+                act = F.Convolution(x, new_weight, new_bias, name='fwd', **self._kwargs)
             else:
-                act = F.concat(*[F.Convolution(x, w, name='fwd', **self._kwargs) for w in new_weight])
+                act = F.Convolution(x, new_weight, name='fwd', **self._kwargs)
         else:
             if bias is not None:
                 act = sum([
