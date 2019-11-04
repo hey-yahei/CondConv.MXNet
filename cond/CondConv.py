@@ -29,12 +29,13 @@ __author__ = 'YaHei'
 
 
 class DefaultRouter(HybridBlock):
-    def __init__(self, num_hidden):
+    def __init__(self, num_experts):
         super(DefaultRouter, self).__init__()
         with self.name_scope():
             self.body = HybridSequential(prefix='')
             self.body.add(GlobalAvgPool2D())
-            self.body.add(Dense(num_hidden, activation='sigmoid'))
+            self.body.add(Dense(num_experts//4, activation='relu'))
+            self.body.add(Dense(num_experts, activation='sigmoid'))
 
     def hybrid_forward(self, F, x):
         return self.body(x)
@@ -68,7 +69,7 @@ class CondConv2D(HybridBlock):
 
             self._kwargs = {
                 'kernel': kernel_size, 'stride': strides, 'dilate': dilation,
-                'pad': padding, 'num_filter': channels, 'num_group': groups,
+                'pad': padding,# 'num_filter': channels, 'num_group': groups,
                 'no_bias': not use_bias, 'layout': layout}
 
             self.weight = self.params.get('weight', shape=(num_experts, channels, in_channels, *kernel_size),
@@ -86,38 +87,51 @@ class CondConv2D(HybridBlock):
             else:
                 self.act = None
 
-            self.router = router(num_experts) or DefaultRouter(num_experts)
+            if router is not None:
+                self.router = router(num_experts)
+            else:
+                self.router = DefaultRouter(num_experts)
 
     def hybrid_forward(self, F, x, weight, bias=None):
+        bs, c, h, w = x.shape
+        k, oc, _, kh, kw = weight.shape
         routing_weights = self.router(x)
+
         if self._combine_kernels:
-            # x_split = x.split(axis=0, num_outputs=x.shape[0])
-            # new_weight = (weight.expand_dims(0) * routing_weights.reshape(0, 0, 1, 1, 1, 1)).sum(axis=1)
-            # if bias is not None:
-            #     new_bias = (bias.expand_dims(0) * routing_weights.reshape(0, 0, 1)).sum(axis=1)
-            #     act = F.concat(*[F.Convolution(x, w, b, name='fwd', **self._kwargs)
-            #                      for x, w, b in zip(x_split, new_weight, new_bias)], dim=0)
-            # else:
-            #     act = F.concat(*[F.Convolution(x, w, name='fwd', **self._kwargs)
-            #                      for x, w in zip(x_split, new_weight)], dim=0)
-            assert x.shape[0] == 1
-            new_weight = (weight * routing_weights.reshape(-1, 1, 1, 1, 1)).sum(axis=0)
+            """
+            x: (bs, c, h, w) -> (1, bs*c, h, w)
+            weight: (k, oc, c, kh, kw) --combine--> (bs, oc, c, kh, kw) -> (bs*oc, c, kh, kw)
+            bias: (k, oc) --combine--> (bs, oc) -> (bs*oc,)
+            act = Conv2D(x, weight, num_filter=bs*oc, num_group=bs) -> (1, bs*oc, oh, ow) -> (bs, oc, oh, ow)
+            """
+            x = x.reshape(1, bs * c, h, w)
+            new_weight = F.dot(routing_weights, weight).reshape(bs * oc, c, kh, kw)
             if bias is not None:
-                new_bias = (bias * routing_weights.reshape(-1, 1)).sum(axis=0)
-                act = F.Convolution(x, new_weight, new_bias, name='fwd', **self._kwargs)
+                new_bias = F.dot(routing_weights, bias).reshape(bs * oc)
+                act = F.Convolution(x, new_weight, new_bias, name='fwd', num_filter=bs*oc, num_group=bs, **self._kwargs)
             else:
-                act = F.Convolution(x, new_weight, name='fwd', **self._kwargs)
+                act = F.Convolution(x, new_weight, name='fwd', num_filter=bs*oc, num_group=bs, **self._kwargs)
+            act = act.reshape(bs, oc, 0, 0)
         else:
+            """
+            x: (bs, c, h, w) --repeat--> (bs, k*c, h, w)
+            weight: (k, oc, c, kh, kw) -> (k*oc, c, kh, kw)
+            bias: (k, oc) -> (k*oc,)
+            act = Conv2D(x, weight, num_filter=k*oc, num_group=k) -> (bs, k*oc, oh, ow) 
+                                                                  -> (bs, k, oc, oh, ow) --combine--> (bs, oc, oh, ow)
+            """
+            x = x.repeat(repeats=k, axis=1)
+            weight = weight.reshape(k * oc, c, kh, kw)
             if bias is not None:
-                act = sum([
-                    routing_weights[:, i].reshape(0, 1, 1, 1) * F.Convolution(x, weight[i], bias[i], name='fwd', **self._kwargs)
-                    for i in range(weight.shape[0])
-                ])
+                bias = bias.reshape(k * oc)
+                act = F.Convolution(x, weight, bias, name='fwd', num_filter=k*oc, num_group=k, **self._kwargs)
             else:
-                act = sum([
-                    routing_weights[:, i].reshape(0, 1, 1, 1) * F.Convolution(x, weight[i], name='fwd', **self._kwargs)
-                    for i in range(weight.shape[0])
-                ])
+                act = F.Convolution(x, weight, name='fwd', num_filter=k * oc, num_group=k, **self._kwargs)
+            act = act.reshape(bs, k, oc, *act.shape[-2:])
+            routing_weights = routing_weights.reshape(0, 0, 1, 1, 1)
+            act = (routing_weights * act).sum(axis=1)
+
         if self.act is not None:
             act = self.act(act)
+            
         return act
