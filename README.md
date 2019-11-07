@@ -19,15 +19,15 @@ I use grouped convolution to implement CondConv easily --
 For small `k`(<8), training with latter method is faster.   
 For large `k`(>=8), training with the former method is suggested.
 
-## Experiment on cifar_resnet50_v1      
+## Experiment on cifar_resnet20_v1      
 
-| num_experts | Top-1 Acc |
-|:---:|:---:|
-|(baseline)|91.51%|
-|4|91.77%|
-|8|91.81%|
-|16|91.89%|
-|32|92.26%|
+| num_experts | Parameters | FLOPS | Top-1 Acc |
+|:---:|:---:|:---:|:---:|
+|(baseline)|274,042|41,013,878|91.51%|
+|4|1,078,402(+293%)|41,018,798(+0.012%)|91.77%|
+|8|2,150,026(+684%)|41,023,718(+0.024%)|91.81%|
+|16|4,293,274(+1467%)|41,033,558(+0.048%)|91.89%|
+|32|8,579,770(+3031%)|41,053,238(+0.096%)|92.26%|
 
 -----------         
 More details refer to [CondConv：按需定制的卷积权重 | Hey~YaHei!](https://hey-yahei.cn/2019/10/30/CondConv/)
