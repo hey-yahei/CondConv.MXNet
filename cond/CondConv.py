@@ -47,7 +47,7 @@ class CondConv2D(HybridBlock):
                  dilation=(1, 1), groups=1, layout='NCHW',
                  activation=None, use_bias=True, weight_initializer=None,
                  bias_initializer='zeros', in_channels=0,
-                 router=None, num_experts=1, compute_mode='auto', drop_rate=.2):
+                 router=None, num_experts=1, compute_mode='auto', drop_rate=.0):
         super(CondConv2D, self).__init__()
         assert dilation in (1, (1, 1)) and groups == 1
         self._drop_rate = drop_rate
