@@ -21,8 +21,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from mxnet.gluon.nn import HybridBlock, Activation, GlobalAvgPool2D, Dense, HybridSequential
+from mxnet import autograd
 from mxnet.base import numeric_types
+from mxnet.gluon.nn import HybridBlock, Activation, GlobalAvgPool2D, Dense, HybridSequential
 
 __all__ = ['DefaultRouter', 'CondConv2D']
 __author__ = 'YaHei'
@@ -34,7 +35,7 @@ class DefaultRouter(HybridBlock):
         with self.name_scope():
             self.body = HybridSequential(prefix='')
             self.body.add(GlobalAvgPool2D())
-            self.body.add(Dense(num_experts//4, activation='relu'))
+            # self.body.add(Dense(num_experts//4, activation='relu'))
             self.body.add(Dense(num_experts, activation='sigmoid'))
 
     def hybrid_forward(self, F, x):
@@ -46,9 +47,10 @@ class CondConv2D(HybridBlock):
                  dilation=(1, 1), groups=1, layout='NCHW',
                  activation=None, use_bias=True, weight_initializer=None,
                  bias_initializer='zeros', in_channels=0,
-                 router=None, num_experts=1, compute_mode='auto'):
+                 router=None, num_experts=1, compute_mode='auto', drop_rate=.2):
         super(CondConv2D, self).__init__()
         assert dilation in (1, (1, 1)) and groups == 1
+        self._drop_rate = drop_rate
 
         with self.name_scope():
             if compute_mode == 'auto':
@@ -96,6 +98,9 @@ class CondConv2D(HybridBlock):
         bs, c, h, w = x.shape
         k, oc, _, kh, kw = weight.shape
         routing_weights = self.router(x)
+        if autograd.is_training():
+            mask = (F.uniform(0., 1., shape=routing_weights.shape, ctx=routing_weights.context) > self._drop_rate)
+            routing_weights = routing_weights * mask
 
         if self._combine_kernels:
             """
@@ -126,12 +131,15 @@ class CondConv2D(HybridBlock):
                 bias = bias.reshape(k * oc)
                 act = F.Convolution(x, weight, bias, name='fwd', num_filter=k*oc, num_group=k, **self._kwargs)
             else:
-                act = F.Convolution(x, weight, name='fwd', num_filter=k * oc, num_group=k, **self._kwargs)
+                act = F.Convolution(x, weight, name='fwd', num_filter=k*oc, num_group=k, **self._kwargs)
             act = act.reshape(bs, k, oc, *act.shape[-2:])
             routing_weights = routing_weights.reshape(0, 0, 1, 1, 1)
             act = (routing_weights * act).sum(axis=1)
 
         if self.act is not None:
             act = self.act(act)
-            
+
+        if autograd.is_training():
+            act = act / (1. - self._drop_rate)
+
         return act

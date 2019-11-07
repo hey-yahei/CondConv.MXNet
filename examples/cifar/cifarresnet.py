@@ -235,7 +235,6 @@ class CIFARResNetV2(HybridBlock):
             self.features = nn.HybridSequential(prefix='')
             self.features.add(norm_layer(scale=False, center=False,
                                          **({} if norm_kwargs is None else norm_kwargs)))
-
             self.features.add(nn.Conv2D(channels[0], 3, 1, 1, use_bias=False))
 
             in_channels = channels[0]
