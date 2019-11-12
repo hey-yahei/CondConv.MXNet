@@ -49,7 +49,9 @@ class CondConv2D(HybridBlock):
                  bias_initializer='zeros', in_channels=0,
                  router=None, num_experts=1, compute_mode='auto', drop_rate=.0):
         super(CondConv2D, self).__init__()
-        assert dilation in (1, (1, 1)) and groups == 1
+        assert dilation in (1, (1, 1))
+        assert channels % groups == 0 and in_channels % groups == 0
+        self._groups = groups
         self._drop_rate = drop_rate
 
         with self.name_scope():
@@ -74,7 +76,7 @@ class CondConv2D(HybridBlock):
                 'pad': padding,# 'num_filter': channels, 'num_group': groups,
                 'no_bias': not use_bias, 'layout': layout}
 
-            self.weight = self.params.get('weight', shape=(num_experts, channels, in_channels, *kernel_size),
+            self.weight = self.params.get('weight', shape=(num_experts, channels, in_channels//groups, *kernel_size),
                                           init=weight_initializer,
                                           allow_deferred_init=True)
             if use_bias:
@@ -96,7 +98,7 @@ class CondConv2D(HybridBlock):
 
     def hybrid_forward(self, F, x, weight, bias=None):
         bs, c, h, w = x.shape
-        k, oc, _, kh, kw = weight.shape
+        k, oc, cg, kh, kw = weight.shape
         routing_weights = self.router(x)
         if autograd.is_training():
             mask = (F.uniform(0., 1., shape=routing_weights.shape, ctx=routing_weights.context) > self._drop_rate)
@@ -110,28 +112,28 @@ class CondConv2D(HybridBlock):
             act = Conv2D(x, weight, num_filter=bs*oc, num_group=bs) -> (1, bs*oc, oh, ow) -> (bs, oc, oh, ow)
             """
             x = x.reshape(1, bs * c, h, w)
-            new_weight = F.dot(routing_weights, weight).reshape(bs * oc, c, kh, kw)
+            new_weight = F.dot(routing_weights, weight).reshape(bs * oc, cg, kh, kw)
             if bias is not None:
                 new_bias = F.dot(routing_weights, bias).reshape(bs * oc)
-                act = F.Convolution(x, new_weight, new_bias, name='fwd', num_filter=bs*oc, num_group=bs, **self._kwargs)
+                act = F.Convolution(x, new_weight, new_bias, name='fwd', num_filter=bs*oc, num_group=bs*self._groups, **self._kwargs)
             else:
-                act = F.Convolution(x, new_weight, name='fwd', num_filter=bs*oc, num_group=bs, **self._kwargs)
+                act = F.Convolution(x, new_weight, name='fwd', num_filter=bs*oc, num_group=bs*self._groups, **self._kwargs)
             act = act.reshape(bs, oc, 0, 0)
         else:
             """
-            x: (bs, c, h, w) --repeat--> (bs, k*c, h, w)
+            x: (bs, c, h, w) --tile--> (bs, k*c, h, w)
             weight: (k, oc, c, kh, kw) -> (k*oc, c, kh, kw)
             bias: (k, oc) -> (k*oc,)
             act = Conv2D(x, weight, num_filter=k*oc, num_group=k) -> (bs, k*oc, oh, ow) 
                                                                   -> (bs, k, oc, oh, ow) --combine--> (bs, oc, oh, ow)
             """
-            x = x.repeat(repeats=k, axis=1)
-            weight = weight.reshape(k * oc, c, kh, kw)
+            x = x.tile(reps=(1, k, 1, 1))
+            weight = weight.reshape(k * oc, cg, kh, kw)
             if bias is not None:
                 bias = bias.reshape(k * oc)
-                act = F.Convolution(x, weight, bias, name='fwd', num_filter=k*oc, num_group=k, **self._kwargs)
+                act = F.Convolution(x, weight, bias, name='fwd', num_filter=k*oc, num_group=k*self._groups, **self._kwargs)
             else:
-                act = F.Convolution(x, weight, name='fwd', num_filter=k*oc, num_group=k, **self._kwargs)
+                act = F.Convolution(x, weight, name='fwd', num_filter=k*oc, num_group=k*self._groups, **self._kwargs)
             act = act.reshape(bs, k, oc, *act.shape[-2:])
             routing_weights = routing_weights.reshape(0, 0, 1, 1, 1)
             act = (routing_weights * act).sum(axis=1)
