@@ -31,4 +31,4 @@ For large `k`(>=8), training with the former method is suggested.
 |(resnet56)|860,026(+314%)|126,292,598(+308%)|92.85%|
 
 -----------         
-More details refer to [CondConv：按需定制的卷积权重 | Hey~YaHei!](https://hey-yahei.cn/2019/10/30/CondConv/)
+More details refer to [CondConv：按需定制的卷积权重 | Hey~YaHei!](https://www.yuque.com/yahei/hey-yahei/condconv)
